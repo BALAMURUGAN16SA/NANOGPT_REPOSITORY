@@ -24,6 +24,9 @@ from contextlib import nullcontext
 
 import numpy as np
 import torch
+import matplotlib.pyplot as plt
+from pathlib import Path
+
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
@@ -246,6 +249,12 @@ if wandb_log and master_process:
     import wandb
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
 
+if master_process:
+    # For final loss plotting
+    train_loss_history = []
+    val_loss_history = []
+    step_history = []
+
 # training loop
 X, Y = get_batch('train') # fetch the very first batch
 t0 = time.time()
@@ -262,6 +271,9 @@ while True:
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
+        train_loss_history.append(losses['train'])
+        val_loss_history.append(losses['val'])
+        step_history.append(iter_num)
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
         if wandb_log:
             wandb.log({
@@ -331,6 +343,39 @@ while True:
     # termination conditions
     if iter_num > max_iters:
         break
+        
+if master_process and len(step_history) > 0:
+    plt.figure(figsize=(10, 6))
+    plt.plot(step_history, train_loss_history, 'b-', label='Training loss')
+    plt.plot(step_history, val_loss_history, 'r-', label='Validation loss')
+    plt.xlabel('Iterations')
+    plt.ylabel('Loss')
+    plt.title('Training Progress')
+    plt.legend()
+    plt.grid(True)
+    
+    plot_path = os.path.join(out_dir, 'final_loss_plot.png')
+    plt.savefig(plot_path)
+    print(f"\nFinal loss plot saved to {plot_path}")
+    try:
+        from IPython import get_ipython
+        if 'IPKernelApp' in get_ipython().config:  # Check if in notebook
+            get_ipython().run_line_magic('matplotlib', 'inline')
+            plt.show()
+        else:  # Regular script
+            plt.show()
+    except:
+        plt.show()  # Fallback
+    
+    # Optional: Also save the raw data
+    loss_data = {
+        'steps': step_history,
+        'train_loss': train_loss_history,
+        'val_loss': val_loss_history
+    }
+    with open(os.path.join(out_dir, 'loss_data.pkl'), 'wb') as f:
+        pickle.dump(loss_data, f)
+    print(f"Loss data saved to {os.path.join(out_dir, 'loss_data.pkl')}")
 
 if ddp:
     destroy_process_group()
